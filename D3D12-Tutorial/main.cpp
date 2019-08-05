@@ -443,7 +443,7 @@ ComPtr<ID3D12DescriptorHeap> CreateDescriptorHeap(ComPtr<ID3D12Device2> device,
 	return descriptorHeap;
 }
 
-void UpdateRenderTargetViews(ComPtr<ID3D12Device> device, ComPtr<IDXGISwapChain4> swapChain,
+void UpdateRenderTargetViews(ComPtr<ID3D12Device2> device, ComPtr<IDXGISwapChain4> swapChain,
 	ComPtr<ID3D12DescriptorHeap> descriptorHeap)
 {
 	// Query the size of a single descriptor in the descheap
@@ -497,4 +497,67 @@ ComPtr<ID3D12GraphicsCommandList> CreateCommandList(ComPtr<ID3D12Device2> device
 	ThrowIfFailed(commandList->Close());
 
 	return commandList;
+}
+
+// Create fence with initial value 0
+ComPtr<ID3D12Fence> CreateFence(ComPtr<ID3D12Device2> device)
+{
+	ComPtr<ID3D12Fence> fence;
+
+	// Flags: https://docs.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_fence_flags
+	ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+
+	return fence;
+}
+
+// This returns an OS Event handle needed to block the CPU while waiting for a fence to be signalled
+HANDLE CreateEventHandle()
+{
+	HANDLE fenceEvent;
+
+	// Params:
+	// -lpEventAttributes: a pointer to a SECURITY_ATTRIBUTES structure. If NULL, handle may not be inherited by child processes
+	//	Docs: https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/aa379560(v=vs.85)
+	// -bManualReset: if TRUE, event created must be manually set event state to nonsignaled via ResetEvent
+	// -bInitialState: TRUE -> Signaled, else Non-Signaled
+	// -lpName: Name of the event object
+	fenceEvent = ::CreateEvent(NULL, FALSE, FALSE, NULL);
+	assert(fenceEvent && "Failed to create fence event.");
+
+	return fenceEvent;
+}
+
+// Used to signal the fence from the GPU by adding a signal event to the provided command queue.
+// Note that the Signal happens only once it is reached in the CommandQueue, not immediately.
+// Returns the value the CPU Thread should wait for before using any resources that are "in-flight" for that frame on the GPU
+uint64_t Signal(ComPtr<ID3D12CommandQueue> commandQueue, ComPtr<ID3D12Fence> fence,
+	uint64_t& fenceValue)
+{
+	uint64_t fenceValueForSignal = ++fenceValue;
+	ThrowIfFailed(commandQueue->Signal(fence.Get(), fenceValueForSignal));
+
+	return fenceValueForSignal;
+}
+
+// Used to stall the CPU thread until the fence is signalled with the specified value or greater.
+// Will wait until the duration is reached (default ~584 million years)
+void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceValue, HANDLE fenceEvent,
+	std::chrono::milliseconds duration = std::chrono::milliseconds::max())
+{
+	// Query current fence value, only wait if our value is gt fence value
+	if (fence->GetCompletedValue() < fenceValue)
+	{
+		ThrowIfFailed(fence->SetEventOnCompletion(fenceValue, fenceEvent));
+		::WaitForSingleObject(fenceEvent, static_cast<DWORD>(duration.count()));
+	}
+}
+
+// Flush ensures that any previously exxecuted commands on the GPU have finished executing
+// before the CPU Thread is allowed to continue processing. Is simply a Signal followed by a WaitForFenceValue
+// Useful to ensure that commands are finished executing before releasing resources used by them
+void Flush(ComPtr<ID3D12CommandQueue> commandQueue, ComPtr<ID3D12Fence> fence,
+	uint64_t& fenceValue, HANDLE fenceEvent)
+{
+	uint64_t fenceValueForSignal = Signal(commandQueue, fence, fenceValue);
+	WaitForFenceValue(fence, fenceValueForSignal, fenceEvent);
 }
