@@ -590,3 +590,93 @@ void Update()
 		elapsedSeconds = 0.0;
 	}
 }
+
+// Generally, Render is where we will do graphics work, queue commands, and present
+// In this program, we simply clear the back buffer and present the rendered frame.
+void Render()
+{
+	// Note in DX12, it is on programmer to ensure that resources are in the correct state
+	// before being used. Resources are transitioned between states by a resource barrier,
+	// inserted in the command list.
+	//	E.g.	Before swap chain's back buffer can be used as a render target, it must be 
+	//			transitioned to RENDER_TARGET state, and before it can be used to present,
+	//			it must be transitioned to PRESENT state.
+	// Types of Resource Barriers:
+	//		1) Transition:
+	//			Transitions a subresource to a state before using it.
+	//		2) Aliasing:
+	//			Specifies a resource is used in a placed or reserved heap before being aliased
+	//			with another resource in the same heap.
+	//		3) UAV:
+	//			Indicates that all UAV accesses to a particular resource have completed before
+	//			any future UAV access can befine, necessary when the UAV is transitioned for:
+	//				i) Read > Write
+	//				ii) Write > Read
+	//				iii) Write > Write
+	//			to prevent race conditions.
+	// Note we will only use Transition resource barriers in this program
+
+	auto commandAllocator = g_CommandAllocators[g_CurrentBackBufferIndex];
+	auto backBuffer = g_BackBuffers[g_CurrentBackBufferIndex];
+	
+	// Reset cmd allocator and list so the command list can be used for recording the next frame
+	commandAllocator->Reset();
+	g_CommandList->Reset(commandAllocator.Get(), nullptr);
+
+	// Clear the render target
+	{
+		// Set up Barrier to transition backBuffer from PRESENT to RENDER_TARGET
+		// Note that previous state MUST be specified, and there is no way to query for it,
+		// so application programmer must keep track of it.
+		CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+			backBuffer.Get(), 
+			D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+		// Add resource barrier to command list
+		g_CommandList->ResourceBarrier(1, &barrier);
+
+		FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f }; 
+		// Get the Descriptor table handle of current backbuffer
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(g_RTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			g_CurrentBackBufferIndex, g_RTVDescriptorSize);
+
+		g_CommandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+	}
+	
+
+	// Present
+	{
+		// Transition resource barrier to transition backBUffer from render target state to present
+		CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+			backBuffer.Get(),
+			D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+		g_CommandList->ResourceBarrier(1, &barrier);
+
+		// Command List must be closed before being executed on Command Queue
+		ThrowIfFailed(g_CommandList->Close());
+
+		// Execute Command Lists on Command Queue
+		ID3D12CommandList* const commandLists[] = {
+			g_CommandList.Get()
+		};
+		g_CommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+
+		// Swap Chain's back buffer is presented.
+		//	-syncInterval : specifies how to sync presentation of frame with vertical blank
+		//	-flags: https://docs.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present
+		UINT syncInterval = g_VSync ? 1 : 0;
+		UINT presentFlags = g_TearingSupported && !g_VSync ? DXGI_PRESENT_ALLOW_TEARING : 0;
+		ThrowIfFailed(g_SwapChain->Present(syncInterval, presentFlags));
+
+		// Insert Signal into command queue to ensure writeable render targets arent touched until
+		// they are finished being used.
+		g_FrameFenceValues[g_CurrentBackBufferIndex] = Signal(g_CommandQueue, g_Fence, g_FenceValue);
+	
+		// Update back buffer index to match swap chains next back buffer
+		g_CurrentBackBufferIndex = g_SwapChain->GetCurrentBackBufferIndex();
+
+		// Before we can do anything with the current back buffer, we must make sure that 
+		// no work needs to finish for it first.
+		WaitForFenceValue(g_Fence, g_FrameFenceValues[g_CurrentBackBufferIndex], g_FenceEvent);
+	}
+}
