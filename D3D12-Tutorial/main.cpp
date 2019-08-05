@@ -63,7 +63,7 @@ RECT g_WindowRect;
 
 // DirectX 12 Objects
 // DirectX Device Object
-ComPtr<ID3D12Device> g_Device; 
+ComPtr<ID3D12Device2> g_Device; 
 ComPtr<ID3D12CommandQueue> g_CommandQueue;
 // Swap Chain - responsible for presenting rendered image to window
 ComPtr<IDXGISwapChain4> g_SwapChain; 
@@ -678,5 +678,44 @@ void Render()
 		// Before we can do anything with the current back buffer, we must make sure that 
 		// no work needs to finish for it first.
 		WaitForFenceValue(g_Fence, g_FrameFenceValues[g_CurrentBackBufferIndex], g_FenceEvent);
+	}
+}
+
+// Does the work for resize event, which occurs on window resize/creation. Resizes the swap chain buffers
+// if the client area of the window changes.
+void Resize(uint32_t width, uint32_t height)
+{
+	// If client area has changed, resize swap chain back buffers
+	if (g_ClientWidth != width || g_ClientHeight != height)
+	{
+		// Don't allow 0 size swap chain back buffers
+		g_ClientWidth = std::max(1u, width);
+		g_ClientHeight = std::max(1u, height);
+
+		// Flush GPU queue to make sure swap chain backbuffers aren't being
+		// referenced by in flight command list.
+		Flush(g_CommandQueue, g_Fence, g_FenceValue, g_FenceEvent);
+		
+		for (int i = 0; i < g_NumFrames; i++)
+		{
+			// Release references to the Back buffers before swap chain can be resized
+			g_BackBuffers[i].Reset();
+			g_FrameFenceValues[i] = g_FrameFenceValues[g_CurrentBackBufferIndex];
+		}
+
+		// Query Swap Chain Desc, needed for color format and flags for Resizing Buffers
+		DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
+		ThrowIfFailed(g_SwapChain->GetDesc(&swapChainDesc));
+
+		// Resize swap chain buffers
+		ThrowIfFailed(g_SwapChain->ResizeBuffers(g_NumFrames, g_ClientWidth, g_ClientHeight,
+			swapChainDesc.BufferDesc.Format, swapChainDesc.Flags));
+
+		// Current back buffer index may have changed, ensure it is correct
+		g_CurrentBackBufferIndex = g_SwapChain->GetCurrentBackBufferIndex();
+
+		// Swap Chain Buffers have been updated, so we need to update descriptors in descheap
+		// to reflect changes
+		UpdateRenderTargetViews(g_Device, g_SwapChain, g_RTVDescriptorHeap);
 	}
 }
