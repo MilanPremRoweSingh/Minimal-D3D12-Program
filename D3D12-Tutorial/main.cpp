@@ -561,3 +561,32 @@ void Flush(ComPtr<ID3D12CommandQueue> commandQueue, ComPtr<ID3D12Fence> fence,
 	uint64_t fenceValueForSignal = Signal(commandQueue, fence, fenceValue);
 	WaitForFenceValue(fence, fenceValueForSignal, fenceEvent);
 }
+
+// Called once per frame. In this program, outputs frame-rate each second to Debug Output
+void Update()
+{
+	// Static State required to track framerate
+	static uint64_t frameCounter = 0;
+	static double elapsedSeconds = 0.0;
+	static std::chrono::high_resolution_clock clock;
+	static auto t0 = clock.now();
+
+	// Update t0, t1, frameCounter
+	frameCounter++;
+	auto t1 = clock.now();
+	auto deltaTime = t1 - t0;
+	t0 = t1;
+
+	// Update elapsedSeconds, output framerate if 1s elapsed
+	elapsedSeconds += deltaTime.count() * 1e-9;
+	if (elapsedSeconds > 1.0)
+	{
+		char buffer[500];
+		double fps = frameCounter / elapsedSeconds;
+		sprintf_s(buffer, 500, "FPS: %f\n", fps);
+		OutputDebugString(buffer);
+
+		frameCounter = 0;
+		elapsedSeconds = 0.0;
+	}
+}
